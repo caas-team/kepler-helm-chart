@@ -28,7 +28,7 @@ jobs:
 
     - name: Helm Lint, Package, and Push
       run: |
-        cd chart
+        cd chart/kepler
         helm lint .
         helm package .
         helm push $(ls *.tgz | head -1) oci://ghcr.io/caas-team/charts
@@ -40,7 +40,7 @@ jobs:
     - name: Extract Chart Version
       id: chart_version
       run: |
-        version=$(yq e '.version' ./chart/Chart.yaml)
+        version=$(yq e '.version' ./chart/kepler/Chart.yaml)
         echo "::set-output name=version::$version"
 
     - name: Dispatch Event to Helm-Charts Repo
