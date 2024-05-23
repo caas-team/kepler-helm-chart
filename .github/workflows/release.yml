@@ -1,51 +1,52 @@
-name: Release Charts
+name: Build and Push Helm Package
+
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'chart/**'
+    tags:
+    - "*"
 
 jobs:
-  release:
-    permissions:
-      contents: write # needed to write releases
+  helm:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3
-        with:
-          fetch-depth: 0
+    - name: Checkout Repo
+      uses: actions/checkout@v4
 
-      - name: Configure Git
-        run: |
-          git config user.name "$GITHUB_ACTOR"
-          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+    - name: Set up Helm
+      run: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        helm version
 
-      - name: Install Helm
-        uses: azure/setup-helm@5119fcb9089d432beecbf79bb2c7915207344b78 # v3.5
-        with:
-          version: latest
+    - name: Log in to Helm OCI Registry
+      run: |
+        helm registry login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+        helm registry login ${MTR} -u ${DOCKER_USERNAME} -p ${DOCKER_PASSWORD}
+      env:
+        DOCKER_USERNAME: ${{secrets.DOCKER_USERNAME}}
+        DOCKER_PASSWORD: ${{secrets.DOCKER_PASSWORD}}
+        MTR: mtr.devops.telekom.de
 
-      - name: Prepare keys for signing
-        env:
-          SIGNING_KEY_BASE64: ${{ secrets.HELM_SIGNING_PRIVATE_KEY }}
-          SIGNING_KEY_PASSPHRASE_BASE64: ${{ secrets.HELM_SIGNING_PRIVATE_KEY_PASSPHRASE }}
-          KEY_PATH: ".gpg-dir"
-          SIGNING_KEY_PATH: ".gpg-dir/secring.gpg"
-          SIGNING_KEY_PASSPHRASE_PATH: ".gpg-dir/passphrase"
-        run: |
-          mkdir "$KEY_PATH"
-          base64 -d <<< "$SIGNING_KEY_BASE64" > "$SIGNING_KEY_PATH"
-          base64 -d <<< "$SIGNING_KEY_PASSPHRASE_BASE64" > "$SIGNING_KEY_PASSPHRASE_PATH"
-          echo "CR_PASSPHRASE_FILE=$SIGNING_KEY_PASSPHRASE_PATH" >> "$GITHUB_ENV"
-          echo "CR_KEYRING=$SIGNING_KEY_PATH" >> "$GITHUB_ENV"
+    - name: Helm Lint, Package, and Push
+      run: |
+        cd chart
+        helm lint .
+        helm package .
+        helm push $(ls *.tgz | head -1) oci://ghcr.io/caas-team/charts
+        helm push $(ls *.tgz | head -1) oci://${MTR}/${REPO}/charts
+      env:
+        MTR: mtr.devops.telekom.de
+        REPO: caas
 
-      - name: Run chart-releaser
-        uses: helm/chart-releaser-action@be16258da8010256c6e82849661221415f031968 # v1.5.0
-        with:
-          charts_dir: chart
-          config: cr.yaml
-        env:
-          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+    - name: Extract Chart Version
+      id: chart_version
+      run: |
+        version=$(yq e '.version' ./chart/Chart.yaml)
+        echo "::set-output name=version::$version"
+
+    - name: Dispatch Event to Helm-Charts Repo
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        repository: caas-team/helm-charts
+        event-type: new-helm-chart-version
+        client-payload: '{"chart": "kepler-helm-chart", "version": "${{ steps.chart_version.outputs.version }}"}'
